@@ -33,6 +33,8 @@ import java.security.AccessController;
 import java.security.PrivilegedAction;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Hashtable;
@@ -40,6 +42,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Random;
 import java.util.Vector;
 
 import org.apache.tools.ant.AntClassLoader;
@@ -163,7 +166,9 @@ public class JUnitTask extends Task {
     private AntClassLoader classLoader = null;
     private Permissions perm = null;
     private ForkMode forkMode = new ForkMode("perTest");
-
+    private RunOrder runOrder = new RunOrder("default");
+    private long randomSeed = System.currentTimeMillis();
+    
     private boolean splitJUnit = false;
     private boolean enableTestListenerEvents = false;
     private JUnitTaskMirror delegate;
@@ -283,6 +288,14 @@ public class JUnitTask extends Task {
         this.failureProperty = propertyName;
     }
 
+    public void setRunOrder(final RunOrder runOrder) {
+		this.runOrder = runOrder;
+	}
+    
+    public void setRandomSeed(long randomSeed) {
+		this.randomSeed = randomSeed;
+	}
+    
     /**
      * If true, JVM should be forked for each test.
      *
@@ -821,6 +834,9 @@ public class JUnitTask extends Task {
 
         setupJUnitDelegate();
 
+        if(runOrder.getValue().equals(RunOrder.RANDOM))
+        	System.out.println("Running tests in random order using seed " + randomSeed);
+        
         final List<List> testLists = new ArrayList<List>();
         /* parallel test execution is only supported for multi-process execution */
         final int threads = ((!fork) || (forkMode.getValue().equals(ForkMode.ONCE))
@@ -2082,6 +2098,34 @@ public class JUnitTask extends Task {
             return new String[] {ONCE, PER_TEST, PER_BATCH};
         }
     }
+    
+    public static final class RunOrder extends EnumeratedAttribute {
+
+        public static final String DEFAULT = "default";
+        public static final String RANDOM = "random";
+        public static final String ALPHABETICAL = "alphabetical";
+        public static final String REVERSEALPHA = "reversealphabetical";
+
+        /** No arg constructor. */
+        public RunOrder() {
+            super();
+        }
+
+        /**
+         * Constructor using a value.
+         * @param value the value to use - once, perTest or perBatch.
+         */
+        public RunOrder(final String value) {
+            super();
+            setValue(value);
+        }
+
+        /** {@inheritDoc}. */
+        @Override
+        public String[] getValues() {
+            return new String[] {DEFAULT, RANDOM, ALPHABETICAL, REVERSEALPHA};
+        }
+    }
 
     /**
      * Executes all tests that don't need to be forked (or all tests
@@ -2093,8 +2137,9 @@ public class JUnitTask extends Task {
      * @return a list of tasks to be executed.
      * @since 1.6.2
      */
-    protected Collection<List> executeOrQueue(final Enumeration<JUnitTest> testList,
+    protected Collection<List> executeOrQueue(Enumeration<JUnitTest> testList,
                                         final boolean runIndividual) {
+    	testList = orderTests(testList);
         final Map<ForkedTestConfiguration, List> testConfigurations = new HashMap<ForkedTestConfiguration, List>();
         while (testList.hasMoreElements()) {
             final JUnitTest test = testList.nextElement();
@@ -2118,7 +2163,47 @@ public class JUnitTask extends Task {
         return testConfigurations.values();
     }
 
-    /**
+	private Enumeration<JUnitTest> orderTests(Enumeration<JUnitTest> testList) {
+		if (runOrder.getValue().equals(RunOrder.ALPHABETICAL)) {
+			List<JUnitTest> lst = Collections.list(testList);
+			Collections.sort(lst, new Comparator<JUnitTest>() {
+				@Override
+				public int compare(JUnitTest o1, JUnitTest o2) {
+					if (o1 == null || o2 == null || o1.getName() == null || o2.getName() == null)
+						return 0;
+					return o1.getName().compareTo(o2.getName());
+				}
+			});
+			return Collections.enumeration(lst);
+		} else if (runOrder.getValue().equals(RunOrder.REVERSEALPHA)) {
+			List<JUnitTest> lst = Collections.list(testList);
+			Collections.sort(lst, new Comparator<JUnitTest>() {
+				@Override
+				public int compare(JUnitTest o1, JUnitTest o2) {
+					if (o1 == null || o2 == null || o1.getName() == null || o2.getName() == null)
+						return 0;
+					switch (o1.getName().compareTo(o2.getName())) {
+					case 0:
+						return 0;
+					case 1:
+						return -1;
+					case -1:
+						return 1;
+					default:
+						return 0;
+					}
+				}
+			});
+			return Collections.enumeration(lst);
+		} else if (runOrder.getValue().equals(RunOrder.RANDOM)) {
+			List<JUnitTest> lst = Collections.list(testList);
+			Collections.shuffle(lst, new Random(randomSeed));
+			return Collections.enumeration(lst);
+		}
+		return testList;
+	}
+
+	/**
      * Logs information about failed tests, potentially stops
      * processing (by throwing a BuildException) if a failure/error
      * occurred or sets a property.
